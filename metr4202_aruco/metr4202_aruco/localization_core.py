@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -52,6 +52,29 @@ class UpdateResult:
     accepted: bool
     reason: str
     record: MarkerRecord
+
+
+@dataclass(frozen=True)
+class RelativeObservation:
+    """One timestamped marker observation anchored in the odom frame."""
+
+    marker_id: int
+    camera_position: Tuple[float, float, float]
+    stamp_s: float
+    odom_from_camera_translation: Tuple[float, float, float]
+    odom_from_camera_quaternion: Tuple[float, float, float, float]
+    variance_m2: float
+
+
+@dataclass(frozen=True)
+class ProjectedObservation:
+    """One stored observation reprojected into the final map frame."""
+
+    marker_id: int
+    measurement_xy: Tuple[float, float]
+    variance_m2: float
+    stamp_s: float
+    observer_pose: Tuple[float, float, float]
 
 
 def estimate_square_pose(
@@ -135,6 +158,135 @@ def quaternion_yaw(x: float, y: float, z: float, w: float) -> float:
         2.0 * (w * z + x * y),
         1.0 - 2.0 * (y * y + z * z),
     )
+
+
+def rotate_vector_by_quaternion(vector, quaternion):
+    """Rotate a three-dimensional vector by an xyzw quaternion."""
+    vector = np.asarray(vector, dtype=np.float64).reshape(3)
+    x, y, z, w = (
+        float(value)
+        for value in np.asarray(quaternion, dtype=np.float64).reshape(4)
+    )
+    quaternion_norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if quaternion_norm <= 0.0:
+        raise ValueError('quaternion must have non-zero norm')
+    x /= quaternion_norm
+    y /= quaternion_norm
+    z /= quaternion_norm
+    w /= quaternion_norm
+
+    quaternion_vector = np.array([x, y, z], dtype=np.float64)
+    twice_cross = 2.0 * np.cross(quaternion_vector, vector)
+    return vector + w * twice_cross + np.cross(
+        quaternion_vector,
+        twice_cross,
+    )
+
+
+def project_relative_observation(
+    observation: RelativeObservation,
+    map_from_odom_translation,
+    map_from_odom_quaternion,
+) -> ProjectedObservation:
+    """Project one camera observation through odom into the final map."""
+    camera_position = np.asarray(
+        observation.camera_position,
+        dtype=np.float64,
+    )
+    odom_from_camera_translation = np.asarray(
+        observation.odom_from_camera_translation,
+        dtype=np.float64,
+    )
+    map_from_odom_translation = np.asarray(
+        map_from_odom_translation,
+        dtype=np.float64,
+    ).reshape(3)
+
+    marker_in_odom = (
+        rotate_vector_by_quaternion(
+            camera_position,
+            observation.odom_from_camera_quaternion,
+        )
+        + odom_from_camera_translation
+    )
+    marker_in_map = (
+        rotate_vector_by_quaternion(
+            marker_in_odom,
+            map_from_odom_quaternion,
+        )
+        + map_from_odom_translation
+    )
+    observer_in_map = (
+        rotate_vector_by_quaternion(
+            odom_from_camera_translation,
+            map_from_odom_quaternion,
+        )
+        + map_from_odom_translation
+    )
+    odom_camera_yaw = quaternion_yaw(
+        *observation.odom_from_camera_quaternion
+    )
+    map_odom_yaw = quaternion_yaw(*map_from_odom_quaternion)
+    observer_yaw = math.atan2(
+        math.sin(map_odom_yaw + odom_camera_yaw),
+        math.cos(map_odom_yaw + odom_camera_yaw),
+    )
+    return ProjectedObservation(
+        marker_id=observation.marker_id,
+        measurement_xy=(float(marker_in_map[0]), float(marker_in_map[1])),
+        variance_m2=observation.variance_m2,
+        stamp_s=observation.stamp_s,
+        observer_pose=(
+            float(observer_in_map[0]),
+            float(observer_in_map[1]),
+            observer_yaw,
+        ),
+    )
+
+
+def filter_projected_observations(
+    observations: Sequence[ProjectedObservation],
+    sigma: float = 3.5,
+    noise_floor_stddevs: float = 3.0,
+) -> list[ProjectedObservation]:
+    """Reject gross per-ID batch outliers while preserving input order."""
+    if sigma <= 0.0:
+        raise ValueError('sigma must be positive')
+    if noise_floor_stddevs <= 0.0:
+        raise ValueError('noise_floor_stddevs must be positive')
+    groups: Dict[int, list[int]] = {}
+    for index, observation in enumerate(observations):
+        groups.setdefault(observation.marker_id, []).append(index)
+
+    keep = [True] * len(observations)
+    for indices in groups.values():
+        if len(indices) < 3:
+            continue
+        points = np.asarray([
+            observations[index].measurement_xy
+            for index in indices
+        ], dtype=np.float64)
+        centre = np.median(points, axis=0)
+        residuals = np.linalg.norm(points - centre, axis=1)
+        median_residual = float(np.median(residuals))
+        mad = float(np.median(np.abs(residuals - median_residual)))
+        noise_floor = noise_floor_stddevs * math.sqrt(float(np.median([
+            observations[index].variance_m2
+            for index in indices
+        ])))
+        threshold = median_residual + max(
+            sigma * 1.4826 * mad,
+            noise_floor,
+        )
+        for index, residual in zip(indices, residuals):
+            if float(residual) > threshold:
+                keep[index] = False
+
+    return [
+        observation
+        for observation, is_kept in zip(observations, keep)
+        if is_kept
+    ]
 
 
 def angle_difference(first: float, second: float) -> float:

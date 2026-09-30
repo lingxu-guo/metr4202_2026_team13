@@ -43,9 +43,9 @@ class MissionManager(Node):
             Recovery,
             'recovery/handle_failure',
         )
-        self._aruco_reset_client = self.create_client(
+        self._aruco_finalize_client = self.create_client(
             Trigger,
-            'aruco/reset_map',
+            'aruco/finalize_exploration',
         )
         self._nav2_active_client = self.create_client(
             Trigger,
@@ -85,8 +85,8 @@ class MissionManager(Node):
 
         if self._state == 'EXPLORATION':
             self._request_exploration_task()
-        elif self._state == 'ARUCO_RESET':
-            self._reset_aruco_for_coverage()
+        elif self._state == 'ARUCO_FINALIZE':
+            self._finalize_aruco_for_coverage()
         elif self._state == 'COVERAGE_INIT':
             self._initialize_coverage()
         elif self._state == 'COVERAGE':
@@ -148,41 +148,41 @@ class MissionManager(Node):
             self._fail(f'Exploration error: {response.message}')
         elif response.finished:
             self.get_logger().info(
-                'Exploration complete; starting final ArUco map epoch.'
+                'Exploration complete; finalizing saved ArUco observations.'
             )
-            self._state = 'ARUCO_RESET'
+            self._state = 'ARUCO_FINALIZE'
         else:
             self._start_action_for_task(response.task, response.message)
 
-    def _reset_aruco_for_coverage(self) -> None:
-        """Start a clean final-map localization epoch before Coverage."""
-        if not self._aruco_reset_client.service_is_ready():
+    def _finalize_aruco_for_coverage(self) -> None:
+        """Reproject exploration observations before Coverage."""
+        if not self._aruco_finalize_client.service_is_ready():
             if not self._aruco_waiting_logged:
                 self.get_logger().info(
-                    'Waiting for the ArUco reset service before Coverage.'
+                    'Waiting for ArUco finalization before Coverage.'
                 )
                 self._aruco_waiting_logged = True
             return
 
         self._request_in_flight = True
-        future = self._aruco_reset_client.call_async(Trigger.Request())
-        future.add_done_callback(self._handle_aruco_reset_response)
+        future = self._aruco_finalize_client.call_async(Trigger.Request())
+        future.add_done_callback(self._handle_aruco_finalize_response)
 
-    def _handle_aruco_reset_response(self, future) -> None:
-        """Continue to Coverage only after the final map epoch is ready."""
+    def _handle_aruco_finalize_response(self, future) -> None:
+        """Continue only after historical observations are reprojected."""
         self._request_in_flight = False
         try:
             response = future.result()
         except Exception as error:
-            self._fail(f'ArUco map reset failed: {error}')
+            self._fail(f'ArUco finalization failed: {error}')
             return
 
         if not response.success:
-            self._fail(f'ArUco map reset error: {response.message}')
+            self._fail(f'ArUco finalization error: {response.message}')
             return
 
         self.get_logger().info(
-            f'Final ArUco map epoch started: {response.message}'
+            f'ArUco exploration observations finalized: {response.message}'
         )
         self._state = 'COVERAGE_INIT'
 

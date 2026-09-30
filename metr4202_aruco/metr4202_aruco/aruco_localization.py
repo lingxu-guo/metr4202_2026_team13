@@ -3,13 +3,14 @@
 import math
 
 from builtin_interfaces.msg import Time as TimeMessage
-from geometry_msgs.msg import PointStamped
 from metr4202_aruco.localization_core import (
     MarkerDatabase,
+    RelativeObservation,
     TrackingParameters,
     estimate_square_pose,
+    filter_projected_observations,
     observation_variance,
-    quaternion_yaw,
+    project_relative_observation,
 )
 from metr4202_interfaces.msg import ArucoMarker, ArucoMarkerArray
 from metr4202_interfaces.msg import ArucoDetectionArray
@@ -27,7 +28,6 @@ from rclpy.qos import (
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo
 from std_srvs.srv import Trigger
-from tf2_geometry_msgs import do_transform_point
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -38,6 +38,7 @@ class ArucoLocalization(Node):
         """Create subscriptions, TF support, services, and marker storage."""
         super().__init__('aruco_localization')
         self._declare_parameters()
+        self._odom_frame = str(self.get_parameter('odom_frame').value)
         self._map_frame = str(self.get_parameter('map_frame').value)
         self._marker_length = float(
             self.get_parameter('marker_length_m').value
@@ -49,6 +50,12 @@ class ArucoLocalization(Node):
         )
         self._measurement_stddev = float(
             self.get_parameter('measurement_stddev_m').value
+        )
+        self._batch_outlier_sigma = float(
+            self.get_parameter('batch_outlier_sigma').value
+        )
+        self._batch_outlier_noise_floor_stddevs = float(
+            self.get_parameter('batch_outlier_noise_floor_stddevs').value
         )
         self._tf_timeout = Duration(
             seconds=float(self.get_parameter('tf_timeout_s').value)
@@ -77,6 +84,8 @@ class ArucoLocalization(Node):
         self._database = MarkerDatabase(parameters)
         self._camera_info = None
         self._camera_warning_emitted = False
+        self._relative_observations: list[RelativeObservation] = []
+        self._final_map_from_odom = None
 
         self._tf_buffer = Buffer(cache_time=Duration(seconds=30.0))
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -101,6 +110,11 @@ class ArucoLocalization(Node):
             self._detection_callback,
             qos_profile_sensor_data,
         )
+        self._finalize_service = self.create_service(
+            Trigger,
+            'aruco/finalize_exploration',
+            self._finalize_exploration,
+        )
         self._get_service = self.create_service(
             GetArucoMap,
             'aruco/get_marker_map',
@@ -121,12 +135,15 @@ class ArucoLocalization(Node):
         self.declare_parameter('camera_info_topic', '/camera/camera_info')
         self.declare_parameter('detections_topic', '/aruco/detections')
         self.declare_parameter('marker_map_topic', '/aruco/marker_map')
+        self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_length_m', 0.10)
         self.declare_parameter('min_depth_m', 0.15)
         self.declare_parameter('max_depth_m', 4.0)
         self.declare_parameter('max_reprojection_error_px', 3.0)
         self.declare_parameter('measurement_stddev_m', 0.08)
+        self.declare_parameter('batch_outlier_sigma', 3.5)
+        self.declare_parameter('batch_outlier_noise_floor_stddevs', 3.0)
         self.declare_parameter('confirmation_count', 3)
         self.declare_parameter('process_noise_m2_per_s', 1.0e-4)
         self.declare_parameter('innovation_gate_squared', 9.21)
@@ -178,37 +195,29 @@ class ArucoLocalization(Node):
             )
             return
 
+        stamp = Time.from_msg(message.header.stamp)
         try:
-            transform = self._tf_buffer.lookup_transform(
-                self._map_frame,
+            odom_from_camera = self._tf_buffer.lookup_transform(
+                self._odom_frame,
                 source_frame,
-                Time.from_msg(message.header.stamp),
+                stamp,
                 timeout=self._tf_timeout,
             )
         except TransformException as error:
             self.get_logger().warning(
-                f'No timestamped TF for ArUco frame: {error}'
+                f'No timestamped {self._odom_frame} <- {source_frame} '
+                f'TF for ArUco observation: {error}'
             )
             return
 
         camera_matrix = np.asarray(camera_info.k).reshape(3, 3)
         distortion = np.asarray(camera_info.d, dtype=np.float64)
-        observer = transform.transform.translation
-        rotation = transform.transform.rotation
-        observer_pose = (
-            float(observer.x),
-            float(observer.y),
-            quaternion_yaw(
-                rotation.x,
-                rotation.y,
-                rotation.z,
-                rotation.w,
-            ),
-        )
         stamp_s = (
             float(message.header.stamp.sec)
             + float(message.header.stamp.nanosec) * 1.0e-9
         )
+        translation = odom_from_camera.transform.translation
+        rotation = odom_from_camera.transform.rotation
 
         for detection in message.detections:
             corners = [
@@ -232,35 +241,68 @@ class ArucoLocalization(Node):
             ):
                 continue
 
-            camera_point = PointStamped()
-            camera_point.header = message.header
-            camera_point.header.frame_id = source_frame
-            camera_point.point.x = float(estimate.tvec[0, 0])
-            camera_point.point.y = float(estimate.tvec[1, 0])
-            camera_point.point.z = float(estimate.tvec[2, 0])
-            map_point = do_transform_point(camera_point, transform)
-
             distance = float(np.linalg.norm(estimate.tvec))
             variance = observation_variance(
                 self._measurement_stddev,
                 distance,
                 estimate.reprojection_error_px,
             )
-            result = self._database.observe(
-                int(detection.id),
-                (map_point.point.x, map_point.point.y),
-                variance,
-                stamp_s,
-                observer_pose,
+            observation = RelativeObservation(
+                marker_id=int(detection.id),
+                camera_position=tuple(
+                    float(value) for value in estimate.tvec[:, 0]
+                ),
+                stamp_s=stamp_s,
+                odom_from_camera_translation=(
+                    float(translation.x),
+                    float(translation.y),
+                    float(translation.z),
+                ),
+                odom_from_camera_quaternion=(
+                    float(rotation.x),
+                    float(rotation.y),
+                    float(rotation.z),
+                    float(rotation.w),
+                ),
+                variance_m2=variance,
             )
-            if not result.accepted:
-                self.get_logger().debug(
-                    f'Rejected marker {detection.id}: {result.reason}.'
-                )
+            self._relative_observations.append(observation)
+            if self._final_map_from_odom is not None:
+                self._fuse_relative_observation(observation)
 
         self._marker_publisher.publish(
             self._build_marker_map(message.header.stamp)
         )
+
+    def _fuse_relative_observation(
+        self,
+        observation: RelativeObservation,
+    ):
+        """Project and fuse one saved observation using the final map frame."""
+        if self._final_map_from_odom is None:
+            raise RuntimeError('Final map <- odom transform is not available.')
+        translation, quaternion = self._final_map_from_odom
+        projected = project_relative_observation(
+            observation,
+            translation,
+            quaternion,
+        )
+        return self._fuse_projected_observation(projected)
+
+    def _fuse_projected_observation(self, projected):
+        """Fuse one final-map observation into the persistent estimator."""
+        result = self._database.observe(
+            projected.marker_id,
+            projected.measurement_xy,
+            projected.variance_m2,
+            projected.stamp_s,
+            projected.observer_pose,
+        )
+        if not result.accepted:
+            self.get_logger().debug(
+                f'Rejected marker {projected.marker_id}: {result.reason}.'
+            )
+        return result
 
     def _build_marker_map(self, stamp: TimeMessage) -> ArucoMarkerArray:
         """Convert database records to the public marker-map message."""
@@ -302,18 +344,96 @@ class ArucoLocalization(Node):
         )
         return response
 
-    def _reset_marker_map(self, request, response):
-        """Clear prior-SLAM observations and begin a final map epoch."""
+    def _finalize_exploration(self, request, response):
+        """Reproject all exploration observations using final map <- odom."""
         del request
-        previous_count = len(self._database.records())
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                self._map_frame,
+                self._odom_frame,
+                Time(),
+                timeout=self._tf_timeout,
+            )
+        except TransformException as error:
+            response.success = False
+            response.message = (
+                f'Could not finalize ArUco observations: {error}'
+            )
+            return response
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        self._final_map_from_odom = (
+            (
+                float(translation.x),
+                float(translation.y),
+                float(translation.z),
+            ),
+            (
+                float(rotation.x),
+                float(rotation.y),
+                float(rotation.z),
+                float(rotation.w),
+            ),
+        )
         self._database.clear()
+        projected_observations = [
+            project_relative_observation(
+                observation,
+                self._final_map_from_odom[0],
+                self._final_map_from_odom[1],
+            )
+            for observation in self._relative_observations
+        ]
+        filtered_observations = filter_projected_observations(
+            projected_observations,
+            sigma=self._batch_outlier_sigma,
+            noise_floor_stddevs=(
+                self._batch_outlier_noise_floor_stddevs
+            ),
+        )
+        batch_rejected_count = (
+            len(projected_observations) - len(filtered_observations)
+        )
+        accepted_count = 0
+        for observation in sorted(
+            filtered_observations,
+            key=lambda item: item.stamp_s,
+        ):
+            result = self._fuse_projected_observation(observation)
+            accepted_count += int(result.accepted)
+
         self._marker_publisher.publish(
             self._build_marker_map(self.get_clock().now().to_msg())
         )
         response.success = True
-        response.message = f'Cleared {previous_count} marker records.'
+        response.message = (
+            f'Reprojected {len(self._relative_observations)} saved '
+            f'observations using final map <- odom; '
+            f'{batch_rejected_count} gross batch outliers removed; '
+            f'{accepted_count} passed fusion gates.'
+        )
+        self.get_logger().info(response.message)
+        return response
+
+    def _reset_marker_map(self, request, response):
+        """Explicitly clear observations, final transform, and estimates."""
+        del request
+        previous_record_count = len(self._database.records())
+        previous_observation_count = len(self._relative_observations)
+        self._database.clear()
+        self._relative_observations.clear()
+        self._final_map_from_odom = None
+        self._marker_publisher.publish(
+            self._build_marker_map(self.get_clock().now().to_msg())
+        )
+        response.success = True
+        response.message = (
+            f'Cleared {previous_observation_count} saved observations and '
+            f'{previous_record_count} marker records.'
+        )
         self.get_logger().info(
-            'Started a new ArUco localization epoch: '
+            'Explicitly reset ArUco localization: '
             f'{response.message}'
         )
         return response

@@ -13,12 +13,15 @@ aruco_localization:
     camera_info_topic: /camera/camera_info
     detections_topic: /aruco/detections
     marker_map_topic: /aruco/marker_map
+    odom_frame: odom
     map_frame: map
     marker_length_m: 0.10
     min_depth_m: 0.15
     max_depth_m: 4.0
     max_reprojection_error_px: 3.0
     measurement_stddev_m: 0.08
+    batch_outlier_sigma: 3.5
+    batch_outlier_noise_floor_stddevs: 3.0
     confirmation_count: 3
     process_noise_m2_per_s: 0.0001
     innovation_gate_squared: 9.21

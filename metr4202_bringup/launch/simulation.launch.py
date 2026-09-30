@@ -38,6 +38,8 @@ def _gui_preflight(context):
 def generate_launch_description() -> LaunchDescription:
     """Create the simulation, online SLAM, Nav2, and application stack."""
     robot_model = LaunchConfiguration('robot_model')
+    ros_domain_id = LaunchConfiguration('ros_domain_id')
+    world = LaunchConfiguration('world')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
@@ -56,6 +58,8 @@ def generate_launch_description() -> LaunchDescription:
     rviz_software = LaunchConfiguration('rviz_software_rendering')
     controller_frequency = LaunchConfiguration('controller_frequency')
     planner_frequency = LaunchConfiguration('planner_frequency')
+    navigation_params_file = LaunchConfiguration('navigation_params_file')
+    aruco_params_file = LaunchConfiguration('aruco_params_file')
 
     turtlebot3_nav_params = PathJoinSubstitution([
         FindPackageShare('turtlebot3_navigation2'),
@@ -78,7 +82,7 @@ def generate_launch_description() -> LaunchDescription:
     ])
     turtlebot3_gazebo_share = FindPackageShare('turtlebot3_gazebo')
     gazebo_ros_share = FindPackageShare('gazebo_ros')
-    gazebo_world = PathJoinSubstitution([
+    default_gazebo_world = PathJoinSubstitution([
         turtlebot3_gazebo_share, 'worlds', 'turtlebot3_world.world'
     ])
     gazebo_models = PathJoinSubstitution([
@@ -96,6 +100,16 @@ def generate_launch_description() -> LaunchDescription:
             ),
             description='TurtleBot3 model: burger, waffle, or waffle_pi.',
         ),
+        DeclareLaunchArgument(
+            'ros_domain_id',
+            default_value=EnvironmentVariable('ROS_DOMAIN_ID', default_value='0'),
+            description='ROS 2 DDS domain shared by every launched node.',
+        ),
+        DeclareLaunchArgument(
+            'world',
+            default_value=default_gazebo_world,
+            description='Absolute path to the Gazebo Classic .world file.',
+        ),
         DeclareLaunchArgument('x_pose', default_value='-2.0'),
         DeclareLaunchArgument('y_pose', default_value='-0.5'),
         DeclareLaunchArgument(
@@ -107,6 +121,22 @@ def generate_launch_description() -> LaunchDescription:
                 FindPackageShare('metr4202_bringup'),
                 'config',
                 'slam_toolbox.yaml',
+            ]),
+        ),
+        DeclareLaunchArgument(
+            'navigation_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('metr4202_navigation'),
+                'config',
+                'navigation.yaml',
+            ]),
+        ),
+        DeclareLaunchArgument(
+            'aruco_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('metr4202_aruco'),
+                'config',
+                'aruco.yaml',
             ]),
         ),
         DeclareLaunchArgument('autostart', default_value='true'),
@@ -156,6 +186,7 @@ def generate_launch_description() -> LaunchDescription:
             description='Nav2 planner rate for resource-constrained hosts.',
         ),
         OpaqueFunction(function=_gui_preflight),
+        SetEnvironmentVariable('ROS_DOMAIN_ID', ros_domain_id),
         SetEnvironmentVariable('TURTLEBOT3_MODEL', robot_model),
         SetEnvironmentVariable(
             'GAZEBO_MODEL_PATH',
@@ -171,7 +202,7 @@ def generate_launch_description() -> LaunchDescription:
                     gazebo_ros_share, 'launch', 'gzserver.launch.py'
                 ])
             ),
-            launch_arguments={'world': gazebo_world}.items(),
+            launch_arguments={'world': world}.items(),
         ),
         TimerAction(
             period=gazebo_gui_delay,
@@ -264,7 +295,11 @@ def generate_launch_description() -> LaunchDescription:
                         'team13_system.launch.py',
                     ])
                 ),
-                launch_arguments={'use_sim_time': 'true'}.items(),
+                launch_arguments={
+                    'use_sim_time': 'true',
+                    'navigation_params_file': navigation_params_file,
+                    'aruco_params_file': aruco_params_file,
+                }.items(),
                 condition=IfCondition(start_team13),
             )],
         ),

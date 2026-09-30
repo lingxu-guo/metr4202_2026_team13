@@ -12,6 +12,11 @@ def generate_launch_description() -> LaunchDescription:
     """Create the Team 13 application-node launch description."""
     use_sim_time = LaunchConfiguration('use_sim_time')
     node_parameters = [{'use_sim_time': use_sim_time}]
+    navigation_parameters = LaunchConfiguration('navigation_params_file')
+    navigation_node_parameters = [
+        navigation_parameters,
+        {'use_sim_time': use_sim_time},
+    ]
     aruco_parameters = LaunchConfiguration('aruco_params_file')
     aruco_node_parameters = [
         aruco_parameters,
@@ -23,6 +28,15 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time',
             default_value='false',
             description='Use the Gazebo simulation clock when true.',
+        ),
+        DeclareLaunchArgument(
+            'navigation_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('metr4202_navigation'),
+                'config',
+                'navigation.yaml',
+            ]),
+            description='Exploration and Coverage parameters.',
         ),
         DeclareLaunchArgument(
             'aruco_params_file',
@@ -38,14 +52,14 @@ def generate_launch_description() -> LaunchDescription:
             executable='exploration',
             name='exploration',
             output='screen',
-            parameters=node_parameters,
+            parameters=navigation_node_parameters,
         ),
         Node(
             package='metr4202_navigation',
             executable='coverage',
             name='coverage',
             output='screen',
-            parameters=node_parameters,
+            parameters=navigation_node_parameters,
         ),
         Node(
             package='metr4202_navigation',

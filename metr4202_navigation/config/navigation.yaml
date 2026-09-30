@@ -1,0 +1,40 @@
+exploration:
+  ros__parameters:
+    map_topic: /map
+    base_frame: base_footprint
+    occupied_threshold: 50
+    frontier_minimum_size: 5
+    obstacle_clearance: 0.20
+    goal_separation: 0.20
+    minimum_goal_distance: 0.50
+    maximum_goal_distance: 12.0
+    candidate_search_radius: 0.50
+    progress_map_updates: 5
+    progress_known_cell_threshold: 5
+
+coverage:
+  ros__parameters:
+    map_topic: /map
+    coverage_map_topic: /coverage/status_map
+    base_frame: base_footprint
+    occupied_threshold: 50
+
+    # Robot/camera geometry. Measure these on the final hardware.
+    robot_footprint_radius: 0.22
+    obstacle_clearance: 0.08
+    camera_radial_offset: 0.10
+
+    # Boundary/candidate sampling. Zero selects the map resolution.
+    target_spacing: 0.0
+    candidate_spacing: 0.20
+    minimum_candidate_spacing: 0.0
+    contour_simplification: 0.0
+
+    # Visibility model. Distances are from the camera to the target surface;
+    # the angle is target-surface incidence, not the camera optical FOV.
+    visual_distance_min: 0.20
+    visual_distance_max: 2.00
+    viewing_angle_max_degrees: 60.0
+
+    # Greedy score: visible_uncovered_targets / (travel_distance + this cost).
+    fixed_visit_cost: 0.50

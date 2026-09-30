@@ -7,9 +7,12 @@ import numpy as np
 
 from metr4202_aruco.localization_core import (
     MarkerDatabase,
+    RelativeObservation,
     TrackingParameters,
     estimate_square_pose,
+    filter_projected_observations,
     observation_variance,
+    project_relative_observation,
 )
 
 
@@ -150,3 +153,64 @@ def test_observation_variance_increases_with_distance_and_pixel_error():
 
     assert far > near
     assert noisy > near
+
+
+def test_relative_observation_uses_final_map_from_odom_transform():
+    half_turn = math.pi / 2.0
+    observation = RelativeObservation(
+        marker_id=12,
+        camera_position=(1.0, 0.0, 0.0),
+        stamp_s=4.5,
+        odom_from_camera_translation=(2.0, 0.0, 0.0),
+        odom_from_camera_quaternion=(
+            0.0,
+            0.0,
+            math.sin(half_turn / 2.0),
+            math.cos(half_turn / 2.0),
+        ),
+        variance_m2=0.04,
+    )
+
+    projected = project_relative_observation(
+        observation,
+        map_from_odom_translation=(10.0, 0.0, 0.0),
+        map_from_odom_quaternion=(
+            0.0,
+            0.0,
+            math.sin(half_turn / 2.0),
+            math.cos(half_turn / 2.0),
+        ),
+    )
+
+    assert projected.marker_id == 12
+    assert np.allclose(projected.measurement_xy, (9.0, 2.0))
+    assert np.allclose(projected.observer_pose[:2], (10.0, 2.0))
+    assert math.isclose(abs(projected.observer_pose[2]), math.pi)
+    assert projected.variance_m2 == 0.04
+    assert projected.stamp_s == 4.5
+
+
+def test_batch_filter_removes_gross_outlier_and_preserves_order():
+    observations = [
+        project_relative_observation(
+            RelativeObservation(
+                marker_id=5,
+                camera_position=position,
+                stamp_s=stamp,
+                odom_from_camera_translation=(0.0, 0.0, 0.0),
+                odom_from_camera_quaternion=(0.0, 0.0, 0.0, 1.0),
+                variance_m2=0.01,
+            ),
+            (0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+        )
+        for position, stamp in (
+            ((1.0, 1.0, 0.0), 1.0),
+            ((20.0, -10.0, 0.0), 2.0),
+            ((1.02, 0.99, 0.0), 3.0),
+        )
+    ]
+
+    filtered = filter_projected_observations(observations)
+
+    assert [item.stamp_s for item in filtered] == [1.0, 3.0]

@@ -32,6 +32,7 @@ def _rviz_preflight(context):
 def generate_launch_description() -> LaunchDescription:
     """Create the hardware, online SLAM, Nav2, and application stack."""
     robot_model = LaunchConfiguration('robot_model')
+    ros_domain_id = LaunchConfiguration('ros_domain_id')
     lds_model = LaunchConfiguration('lds_model')
     usb_port = LaunchConfiguration('usb_port')
     start_robot_bringup = LaunchConfiguration('start_robot_bringup')
@@ -46,6 +47,8 @@ def generate_launch_description() -> LaunchDescription:
     rviz_software = LaunchConfiguration('rviz_software_rendering')
     controller_frequency = LaunchConfiguration('controller_frequency')
     planner_frequency = LaunchConfiguration('planner_frequency')
+    navigation_params_file = LaunchConfiguration('navigation_params_file')
+    aruco_params_file = LaunchConfiguration('aruco_params_file')
 
     turtlebot3_nav_params = PathJoinSubstitution([
         FindPackageShare('turtlebot3_navigation2'),
@@ -76,6 +79,11 @@ def generate_launch_description() -> LaunchDescription:
             description='TurtleBot3 model: burger, waffle, or waffle_pi.',
         ),
         DeclareLaunchArgument(
+            'ros_domain_id',
+            default_value=EnvironmentVariable('ROS_DOMAIN_ID', default_value='0'),
+            description='ROS 2 DDS domain shared by every launched node.',
+        ),
+        DeclareLaunchArgument(
             'lds_model',
             default_value=EnvironmentVariable(
                 'LDS_MODEL', default_value='LDS-02'
@@ -97,6 +105,22 @@ def generate_launch_description() -> LaunchDescription:
                 FindPackageShare('metr4202_bringup'),
                 'config',
                 'slam_toolbox.yaml',
+            ]),
+        ),
+        DeclareLaunchArgument(
+            'navigation_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('metr4202_navigation'),
+                'config',
+                'navigation.yaml',
+            ]),
+        ),
+        DeclareLaunchArgument(
+            'aruco_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('metr4202_aruco'),
+                'config',
+                'aruco.yaml',
             ]),
         ),
         DeclareLaunchArgument('autostart', default_value='true'),
@@ -125,6 +149,7 @@ def generate_launch_description() -> LaunchDescription:
             description='Nav2 planner rate for resource-constrained hosts.',
         ),
         OpaqueFunction(function=_rviz_preflight),
+        SetEnvironmentVariable('ROS_DOMAIN_ID', ros_domain_id),
         SetEnvironmentVariable('TURTLEBOT3_MODEL', robot_model),
         SetEnvironmentVariable('LDS_MODEL', lds_model),
         IncludeLaunchDescription(
@@ -195,7 +220,11 @@ def generate_launch_description() -> LaunchDescription:
                     'team13_system.launch.py',
                 ])
             ),
-            launch_arguments={'use_sim_time': 'false'}.items(),
+            launch_arguments={
+                'use_sim_time': 'false',
+                'navigation_params_file': navigation_params_file,
+                'aruco_params_file': aruco_params_file,
+            }.items(),
             condition=IfCondition(start_team13),
         ),
     ])

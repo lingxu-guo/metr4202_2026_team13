@@ -1,0 +1,4 @@
+---
+bool success
+ArucoMarkerArray marker_map
+string message

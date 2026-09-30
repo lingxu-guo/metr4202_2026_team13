@@ -1,0 +1,16 @@
+uint8 EXPLORATION=0
+uint8 COVERAGE=1
+
+uint8 phase
+MotionTask failed_task
+string failure_reason
+---
+bool success
+
+uint8 SKIP=0
+uint8 RETRY_ORIGINAL=1
+uint8 REPLACE_WITH_TASK=2
+uint8 decision
+
+MotionTask replacement_task
+string message

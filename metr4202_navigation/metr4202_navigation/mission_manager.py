@@ -5,8 +5,11 @@ import rclpy
 from metr4202_interfaces.msg import MotionTask
 from metr4202_interfaces.srv import Coverage, Exploration, Recovery
 from nav2_msgs.action import NavigateToPose, Spin
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from slam_toolbox.srv import Pause
 from std_srvs.srv import Trigger
 
 
@@ -32,6 +35,7 @@ class MissionManager(Node):
         self._pending_coverage_task_type = MotionTask.NAVIGATE
         self._nav2_active = False
         self._nav2_active_request_in_flight = False
+        self._slam_pause_waiting_logged = False
         self._aruco_waiting_logged = False
 
         self._exploration_client = self.create_client(
@@ -53,6 +57,14 @@ class MissionManager(Node):
         self._nav2_active_client = self.create_client(
             Trigger,
             'lifecycle_manager_navigation/is_active',
+        )
+        self._slam_pause_client = self.create_client(
+            Pause,
+            'slam_toolbox/pause_new_measurements',
+        )
+        self._slam_parameters_client = self.create_client(
+            GetParameters,
+            'slam_toolbox/get_parameters',
         )
         self._navigate_client = ActionClient(
             self,
@@ -88,6 +100,8 @@ class MissionManager(Node):
 
         if self._state == 'EXPLORATION':
             self._request_exploration_task()
+        elif self._state == 'SLAM_FREEZE':
+            self._freeze_slam_for_coverage()
         elif self._state == 'ARUCO_FINALIZE':
             self._finalize_aruco_for_coverage()
         elif self._state == 'COVERAGE_INIT':
@@ -159,12 +173,103 @@ class MissionManager(Node):
         if response.finished:
             self._active_exploration_goal_id = 0
             self.get_logger().info(
-                'Exploration complete; finalizing saved ArUco observations.'
+                'Exploration complete; freezing SLAM before Coverage.'
             )
-            self._state = 'ARUCO_FINALIZE'
+            self._state = 'SLAM_FREEZE'
         else:
             self._active_exploration_goal_id = response.goal_id
             self._start_action_for_task(response.task, response.message)
+
+    def _freeze_slam_for_coverage(self) -> None:
+        """Pause new SLAM measurements before freezing Coverage geometry."""
+        if (
+            not self._slam_pause_client.service_is_ready()
+            or not self._slam_parameters_client.service_is_ready()
+        ):
+            if not self._slam_pause_waiting_logged:
+                self.get_logger().info(
+                    'Waiting for SLAM pause and parameter services.'
+                )
+                self._slam_pause_waiting_logged = True
+            return
+
+        self._request_in_flight = True
+        self._request_slam_pause_state(self._handle_slam_pause_state)
+
+    def _request_slam_pause_state(self, callback) -> None:
+        """Read the pause parameter and invoke callback asynchronously."""
+        request = GetParameters.Request()
+        request.names = ['paused_new_measurements']
+        future = self._slam_parameters_client.call_async(request)
+        future.add_done_callback(callback)
+
+    @staticmethod
+    def _slam_is_paused(response) -> bool:
+        """Extract and validate paused_new_measurements from a response."""
+        if len(response.values) != 1:
+            raise RuntimeError(
+                'SLAM returned no unique paused_new_measurements value.'
+            )
+        value = response.values[0]
+        if value.type != ParameterType.PARAMETER_BOOL:
+            raise RuntimeError(
+                'SLAM paused_new_measurements is not a bool parameter.'
+            )
+        return value.bool_value
+
+    def _handle_slam_pause_state(self, future) -> None:
+        """Pause SLAM only if it is currently accepting measurements."""
+        try:
+            paused = self._slam_is_paused(future.result())
+        except Exception as error:
+            self._request_in_flight = False
+            self._fail(f'Could not read SLAM pause state: {error}')
+            return
+
+        if paused:
+            self._request_in_flight = False
+            self.get_logger().info(
+                'SLAM was already frozen; finalizing ArUco observations.'
+            )
+            self._state = 'ARUCO_FINALIZE'
+            return
+
+        future = self._slam_pause_client.call_async(Pause.Request())
+        future.add_done_callback(self._handle_slam_pause_response)
+
+    def _handle_slam_pause_response(self, future) -> None:
+        """Verify the toggle service froze SLAM before continuing."""
+        try:
+            response = future.result()
+        except Exception as error:
+            self._request_in_flight = False
+            self._fail(f'Could not pause SLAM measurements: {error}')
+            return
+
+        if not response.status:
+            self._request_in_flight = False
+            self._fail('SLAM rejected the pause-new-measurements request.')
+            return
+
+        self._request_slam_pause_state(self._verify_slam_is_frozen)
+
+    def _verify_slam_is_frozen(self, future) -> None:
+        """Advance only after SLAM reports that measurements are paused."""
+        self._request_in_flight = False
+        try:
+            paused = self._slam_is_paused(future.result())
+        except Exception as error:
+            self._fail(f'Could not verify SLAM pause state: {error}')
+            return
+
+        if not paused:
+            self._fail('SLAM pause request succeeded but SLAM is not frozen.')
+            return
+
+        self.get_logger().info(
+            'SLAM measurements frozen; finalizing ArUco observations.'
+        )
+        self._state = 'ARUCO_FINALIZE'
 
     def _finalize_aruco_for_coverage(self) -> None:
         """Reproject exploration observations before Coverage."""

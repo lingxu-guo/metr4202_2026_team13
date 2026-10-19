@@ -6,7 +6,10 @@ from action_msgs.msg import GoalStatus
 from metr4202_interfaces.msg import MotionTask
 from metr4202_interfaces.srv import Coverage, Exploration, Recovery
 import pytest
+from rcl_interfaces.msg import ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters
 import rclpy
+from slam_toolbox.srv import Pause
 
 from metr4202_navigation.mission_manager import MissionManager
 
@@ -24,6 +27,34 @@ class FinishedFuture:
         if self._error is not None:
             raise self._error
         return self._result
+
+
+class DeferredFuture:
+    """Record a done callback so a test can complete it explicitly."""
+
+    def __init__(self) -> None:
+        """Initialize without a callback."""
+        self.callback = None
+
+    def add_done_callback(self, callback) -> None:
+        """Save the callback registered by production code."""
+        self.callback = callback
+
+
+class RecordingClient:
+    """Minimal client recording requests and returning deferred futures."""
+
+    def __init__(self) -> None:
+        """Initialize empty request and future collections."""
+        self.requests = []
+        self.futures = []
+
+    def call_async(self, request):
+        """Record request and return a controllable future."""
+        future = DeferredFuture()
+        self.requests.append(request)
+        self.futures.append(future)
+        return future
 
 
 @pytest.fixture
@@ -52,6 +83,79 @@ def recovery_response(decision: int) -> Recovery.Response:
     response.decision = decision
     response.message = 'test decision'
     return response
+
+
+def slam_parameter_response(paused: bool) -> GetParameters.Response:
+    """Return a valid paused_new_measurements parameter response."""
+    response = GetParameters.Response()
+    response.values = [ParameterValue(
+        type=ParameterType.PARAMETER_BOOL,
+        bool_value=paused,
+    )]
+    return response
+
+
+def test_exploration_completion_enters_slam_freeze(mission_manager) -> None:
+    """Freeze SLAM before ArUco finalization and Coverage initialization."""
+    mission_manager._state = 'EXPLORATION'
+    response = Exploration.Response()
+    response.success = True
+    response.finished = True
+
+    mission_manager._handle_exploration_response(FinishedFuture(response))
+
+    assert mission_manager._state == 'SLAM_FREEZE'
+
+
+def test_already_frozen_slam_does_not_toggle_pause(mission_manager) -> None:
+    """Avoid resuming SLAM when the toggle service is already paused."""
+    pause_client = RecordingClient()
+    mission_manager._slam_pause_client = pause_client
+    mission_manager._state = 'SLAM_FREEZE'
+    mission_manager._request_in_flight = True
+
+    mission_manager._handle_slam_pause_state(FinishedFuture(
+        slam_parameter_response(True)
+    ))
+
+    assert pause_client.requests == []
+    assert mission_manager._request_in_flight is False
+    assert mission_manager._state == 'ARUCO_FINALIZE'
+
+
+def test_slam_pause_is_verified_before_aruco_finalize(
+    mission_manager,
+) -> None:
+    """Toggle an active SLAM node and verify it reports being frozen."""
+    pause_client = RecordingClient()
+    parameter_client = RecordingClient()
+    mission_manager._slam_pause_client = pause_client
+    mission_manager._slam_parameters_client = parameter_client
+    mission_manager._state = 'SLAM_FREEZE'
+    mission_manager._request_in_flight = True
+
+    mission_manager._handle_slam_pause_state(FinishedFuture(
+        slam_parameter_response(False)
+    ))
+
+    assert len(pause_client.requests) == 1
+    assert isinstance(pause_client.requests[0], Pause.Request)
+    assert mission_manager._state == 'SLAM_FREEZE'
+
+    pause_response = Pause.Response()
+    pause_response.status = True
+    pause_client.futures[0].callback(FinishedFuture(pause_response))
+
+    assert len(parameter_client.requests) == 1
+    assert parameter_client.requests[0].names == [
+        'paused_new_measurements'
+    ]
+    parameter_client.futures[0].callback(FinishedFuture(
+        slam_parameter_response(True)
+    ))
+
+    assert mission_manager._request_in_flight is False
+    assert mission_manager._state == 'ARUCO_FINALIZE'
 
 
 def test_exploration_response_clears_delivered_result_and_saves_goal_id(

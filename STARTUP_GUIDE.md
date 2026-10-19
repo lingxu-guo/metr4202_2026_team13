@@ -46,10 +46,11 @@ TF(odom <- camera, image stamp) ────────┘                │
 
 1. `WAITING_FOR_SERVICES`：等待 Exploration、Coverage、Recovery、Nav2 action server，并确认 Nav2 lifecycle 已 active。
 2. `EXPLORATION`：逐次请求最近的安全 frontier 目标，交给 Nav2 执行。
-3. `ARUCO_FINALIZE`：探索结束后调用 `/aruco/finalize_exploration`，固定最终 `map <- odom`，重投影并融合探索阶段的全部相对观测，不清空结果。
-4. `COVERAGE_INIT`：冻结当时的最终 OccupancyGrid，构建 Coverage 几何模型。
-5. `COVERAGE`：每个候选点先 `NAVIGATE`，成功后原地 `SPIN 2π`；再更新覆盖状态并选择下一点。
-6. `DONE`：没有未覆盖目标，或遇到不可恢复错误。
+3. `SLAM_FREEZE`：查询 `paused_new_measurements`；仅在 SLAM 尚未暂停时调用 `/slam_toolbox/pause_new_measurements`，并在读回暂停状态后继续。
+4. `ARUCO_FINALIZE`：调用 `/aruco/finalize_exploration`，固定最终 `map <- odom`，重投影并融合探索阶段的全部相对观测，不清空结果。
+5. `COVERAGE_INIT`：冻结当时的最终 OccupancyGrid，构建 Coverage 几何模型。
+6. `COVERAGE`：每个候选点先 `NAVIGATE`，成功后原地 `SPIN 2π`；再更新覆盖状态并选择下一点。
+7. `DONE`：没有未覆盖目标，或遇到不可恢复错误。
 
 Nav2 任务失败时会询问 Recovery。当前 `recovery.py` 是占位实现，只返回 `SKIP`；没有清图、后退、重规划或替代目标。
 
@@ -456,7 +457,7 @@ ros2 action list | grep -E 'navigate_to_pose|spin'
 - `/scan`、`/map`、`/camera/image_raw` 持续有数据。
 - 完整启动后存在 `exploration`、`coverage`、`recovery`、`mission_manager`、`aruco_detection`、`aruco_localization`。
 - ArUco 图像与 CameraInfo 的宽高、frame_id 匹配。
-- Exploration 完成后日志出现 `Reprojected ... saved observations`，随后 Coverage initialized；marker 记录不会被清空。
+- Exploration 完成后日志依次出现 `SLAM measurements frozen`、`Reprojected ... saved observations` 和 Coverage initialized；marker 记录不会被清空。
 
 ## 9. 测试与静态检查
 

@@ -9,7 +9,8 @@ ROS 2 Humble mobile-robot system for autonomous mapping, frontier exploration, A
 ```mermaid
 flowchart LR
     SLAM[SLAM Toolbox 建图] --> EXP[Frontier Exploration]
-    EXP --> FINAL[ArUco Finalize]
+    EXP --> FREEZE[Pause SLAM Measurements]
+    FREEZE --> FINAL[ArUco Finalize]
     FINAL --> COV[Visual Coverage]
     COV --> DONE[Mission Done]
 
@@ -18,6 +19,7 @@ flowchart LR
     LOC --> FINAL
 
     MM[Mission Manager] --> EXP
+    MM --> FREEZE
     MM --> FINAL
     MM --> COV
     MM -->|NavigateToPose / Spin| NAV2[Nav2]
@@ -29,6 +31,7 @@ flowchart LR
 ```text
 WAITING_FOR_SERVICES
   → EXPLORATION
+  → SLAM_FREEZE
   → ARUCO_FINALIZE
   → COVERAGE_INIT
   → COVERAGE

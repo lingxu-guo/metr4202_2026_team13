@@ -14,7 +14,9 @@
   <depend>nav_msgs</depend>
   <depend>python3-numpy</depend>
   <depend>python3-opencv</depend>
+  <depend>rcl_interfaces</depend>
   <depend>rclpy</depend>
+  <depend>slam_toolbox</depend>
   <depend>std_srvs</depend>
   <depend>tf2_ros</depend>
 

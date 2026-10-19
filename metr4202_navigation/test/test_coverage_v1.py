@@ -80,7 +80,9 @@ def test_navigation_then_spin_is_one_candidate_transaction() -> None:
     assert spin is not None
     assert spin.candidate_id == navigation.candidate_id
     assert spin.task_type == CoverageModel.SPIN
-    assert spin.spin_yaw == pytest.approx(math.tau)
+    assert spin.spin_yaw == pytest.approx(
+        math.tau - math.radians(62.2)
+    )
 
     model.submit_result(spin.candidate_id, spin.task_type, succeeded=True)
     assert model.summary().covered > 0

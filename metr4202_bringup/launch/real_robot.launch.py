@@ -47,6 +47,7 @@ def generate_launch_description() -> LaunchDescription:
     rviz_software = LaunchConfiguration('rviz_software_rendering')
     controller_frequency = LaunchConfiguration('controller_frequency')
     planner_frequency = LaunchConfiguration('planner_frequency')
+    inflation_radius = LaunchConfiguration('inflation_radius')
     navigation_params_file = LaunchConfiguration('navigation_params_file')
     aruco_params_file = LaunchConfiguration('aruco_params_file')
 
@@ -61,13 +62,14 @@ def generate_launch_description() -> LaunchDescription:
         param_rewrites={
             'controller_frequency': controller_frequency,
             'expected_planner_frequency': planner_frequency,
+            'inflation_radius': inflation_radius,
         },
         convert_types=True,
     )
     nav2_rviz_config = PathJoinSubstitution([
-        FindPackageShare('nav2_bringup'),
+        FindPackageShare('metr4202_bringup'),
         'rviz',
-        'nav2_default_view.rviz',
+        'team13.rviz',
     ])
 
     return LaunchDescription([
@@ -147,6 +149,11 @@ def generate_launch_description() -> LaunchDescription:
             'planner_frequency',
             default_value='5.0',
             description='Nav2 planner rate for resource-constrained hosts.',
+        ),
+        DeclareLaunchArgument(
+            'inflation_radius',
+            default_value='0.55',
+            description='Nav2 local and global costmap inflation radius.',
         ),
         OpaqueFunction(function=_rviz_preflight),
         SetEnvironmentVariable('ROS_DOMAIN_ID', ros_domain_id),

@@ -42,7 +42,8 @@ class Coverage(Node):
         self.declare_parameter('occupied_threshold', 50)
         self.declare_parameter('robot_footprint_radius', 0.22)
         self.declare_parameter('obstacle_clearance', 0.08)
-        self.declare_parameter('camera_radial_offset', 0.10)
+        self.declare_parameter('camera_radial_offset', 0.076)
+        self.declare_parameter('camera_horizontal_fov_degrees', 62.2)
         self.declare_parameter('target_spacing', 0.0)
         self.declare_parameter('candidate_spacing', 0.20)
         self.declare_parameter('minimum_candidate_spacing', 0.0)
@@ -267,6 +268,9 @@ class Coverage(Node):
                 self.get_parameter('viewing_angle_max_degrees').value
             )),
             camera_radial_offset=camera_offset,
+            camera_horizontal_fov=math.radians(float(
+                self.get_parameter('camera_horizontal_fov_degrees').value
+            )),
             contour_simplification=float(
                 self.get_parameter('contour_simplification').value
             ),

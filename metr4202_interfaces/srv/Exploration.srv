@@ -1,5 +1,12 @@
+uint8 NO_RESULT=0
+uint8 SUCCEEDED=1
+uint8 FINAL_FAILURE=2
+
+uint8 previous_result
+uint32 previous_goal_id
 ---
 bool success
 bool finished
+uint32 goal_id
 MotionTask task
 string message

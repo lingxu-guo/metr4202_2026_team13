@@ -3,6 +3,7 @@
 from collections import deque
 import math
 import threading
+import time
 from typing import Iterable, Optional, Sequence, Tuple
 
 from geometry_msgs.msg import PoseStamped
@@ -35,7 +36,8 @@ class Exploration(Node):
         self.declare_parameter('base_frame', 'base_footprint')
         self.declare_parameter('occupied_threshold', 50)
         self.declare_parameter('frontier_minimum_size', 5)
-        self.declare_parameter('obstacle_clearance', 0.20)
+        self.declare_parameter('obstacle_clearance', 0.27)
+        self.declare_parameter('unknown_clearance', 0.20)
         self.declare_parameter('goal_separation', 0.20)
         self.declare_parameter('minimum_goal_distance', 0.50)
         self.declare_parameter('maximum_goal_distance', 12.0)
@@ -43,8 +45,9 @@ class Exploration(Node):
         self.declare_parameter('distance_weight', 0.35)
         self.declare_parameter('bootstrap_spin_yaw', math.tau)
         self.declare_parameter('candidate_search_radius', 0.5)
-        self.declare_parameter('progress_map_updates', 5)
+        self.declare_parameter('progress_map_updates', 3)
         self.declare_parameter('progress_known_cell_threshold', 5)
+        self.declare_parameter('progress_wait_timeout', 2.0)
 
         self._map_topic = self.get_parameter('map_topic').value
         self._base_frame = self.get_parameter('base_frame').value
@@ -53,7 +56,10 @@ class Exploration(Node):
         self._map_update_count = 0
 
         self._current_goal: Optional[GridPoint] = None
+        self._current_goal_id = 0
+        self._next_goal_id = 1
         self._known_cells_before: Optional[int] = None
+        self._goal_start_map_update_count: Optional[int] = None
         self._ineffective_candidates: list[GridPoint] = []
 
         map_group = MutuallyExclusiveCallbackGroup()
@@ -99,9 +105,8 @@ class Exploration(Node):
 
     def _handle_get_next_task(self, request, response):
         """Recompute frontiers from the latest map and return at most one goal."""
-        del request
-        if self._current_goal is not None:
-            self._evaluate_previous_goal_after_map_updates()
+        if not self._process_previous_result(request, response):
+            return response
 
         ready = self._wait_for_map_and_robot_position()
         if ready is None:
@@ -109,7 +114,7 @@ class Exploration(Node):
             response.finished = False
             response.message = 'Exploration stopped while waiting for map and TF.'
             return response
-        occupancy_grid, robot_position = ready
+        occupancy_grid, robot_position, map_update_count = ready
 
         result = self._find_nearest_candidate(occupancy_grid, robot_position)
         if result is None:
@@ -121,9 +126,13 @@ class Exploration(Node):
 
         goal_x, goal_y, cluster_size, distance = result
         self._current_goal = (goal_x, goal_y)
+        self._current_goal_id = self._next_goal_id
+        self._next_goal_id += 1
         self._known_cells_before = self._count_known_cells(occupancy_grid)
+        self._goal_start_map_update_count = map_update_count
         response.success = True
         response.finished = False
+        response.goal_id = self._current_goal_id
         response.task.task_type = MotionTask.NAVIGATE
         response.task.goal_pose = self._make_goal(
             occupancy_grid.header.frame_id,
@@ -145,9 +154,53 @@ class Exploration(Node):
         )
         return response
 
+    def _process_previous_result(self, request, response) -> bool:
+        """Validate and consume the result for the one active goal."""
+        if self._current_goal is None:
+            if (
+                request.previous_result != ExplorationSrv.Request.NO_RESULT
+                or request.previous_goal_id != 0
+            ):
+                response.success = False
+                response.finished = False
+                response.message = (
+                    'No exploration goal is active; expected '
+                    'NO_RESULT with goal_id 0.'
+                )
+                return False
+            return True
+
+        if request.previous_goal_id != self._current_goal_id:
+            response.success = False
+            response.finished = False
+            response.message = (
+                f'Exploration result goal_id {request.previous_goal_id} does '
+                f'not match active goal_id {self._current_goal_id}.'
+            )
+            return False
+        if request.previous_result == ExplorationSrv.Request.SUCCEEDED:
+            self._evaluate_previous_goal_after_map_updates()
+            return True
+        if request.previous_result == ExplorationSrv.Request.FINAL_FAILURE:
+            goal = self._current_goal
+            self._ineffective_candidates.append(goal)
+            self.get_logger().warning(
+                f'Goal ({goal[0]:.2f}, {goal[1]:.2f}) failed permanently; '
+                'retaining it without waiting for map updates.'
+            )
+            self._clear_active_goal()
+            return True
+
+        response.success = False
+        response.finished = False
+        response.message = (
+            'An active exploration goal requires SUCCEEDED or FINAL_FAILURE.'
+        )
+        return False
+
     def _wait_for_map_and_robot_position(
         self,
-    ) -> Optional[Tuple[OccupancyGrid, GridPoint]]:
+    ) -> Optional[Tuple[OccupancyGrid, GridPoint, int]]:
         """Wait until SLAM has published a map and the robot pose is usable."""
         waiting_for_map_logged = False
         waiting_for_tf_logged = False
@@ -163,12 +216,13 @@ class Exploration(Node):
                     self._map_condition.wait(timeout=0.2)
                     continue
                 occupancy_grid = self._latest_map
+                map_update_count = self._map_update_count
 
             robot_position = self._robot_position(
                 occupancy_grid.header.frame_id
             )
             if robot_position is not None:
-                return occupancy_grid, robot_position
+                return occupancy_grid, robot_position, map_update_count
             if not waiting_for_tf_logged:
                 self.get_logger().info(
                     f'Waiting for TF from {occupancy_grid.header.frame_id!r} '
@@ -185,11 +239,29 @@ class Exploration(Node):
         update_count = max(
             0, int(self.get_parameter('progress_map_updates').value)
         )
+        wait_timeout = max(
+            0.0, float(self.get_parameter('progress_wait_timeout').value)
+        )
         with self._map_condition:
-            target_update = self._map_update_count + update_count
+            start_update = self._goal_start_map_update_count
+            if start_update is None:
+                start_update = self._map_update_count
+            target_update = start_update + update_count
+            deadline = time.monotonic() + wait_timeout
             while rclpy.ok() and self._map_update_count < target_update:
-                self._map_condition.wait(timeout=0.5)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                self._map_condition.wait(timeout=min(0.5, remaining))
             occupancy_grid = self._latest_map
+            received_updates = max(0, self._map_update_count - start_update)
+
+        if received_updates < update_count:
+            self.get_logger().warning(
+                'Progress evaluation timed out after receiving '
+                f'{received_updates}/{update_count} map updates since the goal '
+                'was generated; using the latest map.'
+            )
 
         goal = self._current_goal
         if occupancy_grid is not None and goal is not None:
@@ -209,8 +281,14 @@ class Exploration(Node):
                 self.get_logger().info(
                     f'Exploration goal made progress: delta_K={delta_known}.'
                 )
+        self._clear_active_goal()
+
+    def _clear_active_goal(self) -> None:
+        """Clear state only after the active goal result is consumed."""
         self._current_goal = None
+        self._current_goal_id = 0
         self._known_cells_before = None
+        self._goal_start_map_update_count = None
 
     def _robot_position(self, map_frame: str) -> Optional[GridPoint]:
         """Look up the robot position in the map frame without blocking."""
@@ -251,7 +329,7 @@ class Exploration(Node):
             )
             for index, is_free in enumerate(free)
         ]
-        safe = self._safe_cells(
+        obstacle_safe = self._safe_cells(
             free,
             occupied,
             width,
@@ -259,6 +337,20 @@ class Exploration(Node):
             resolution,
             float(self.get_parameter('obstacle_clearance').value),
         )
+        unknown_safe = self._safe_cells(
+            free,
+            unknown,
+            width,
+            height,
+            resolution,
+            float(self.get_parameter('unknown_clearance').value),
+        )
+        safe = [
+            clear_of_obstacles and clear_of_unknown
+            for clear_of_obstacles, clear_of_unknown in zip(
+                obstacle_safe, unknown_safe
+            )
+        ]
 
         minimum_size = int(self.get_parameter('frontier_minimum_size').value)
         search_radius = float(
@@ -352,13 +444,13 @@ class Exploration(Node):
     @staticmethod
     def _safe_cells(
         free: Sequence[bool],
-        occupied: Sequence[bool],
+        blocked: Sequence[bool],
         width: int,
         height: int,
         resolution: float,
         safety_margin: float,
     ) -> list[bool]:
-        """Return free cells at least the safety margin from occupied cells."""
+        """Return free cells at least the safety margin from blocked cells."""
         if safety_margin <= 0.0:
             return list(free)
         radius = int(math.ceil(safety_margin / resolution))
@@ -370,8 +462,8 @@ class Exploration(Node):
             < safety_margin - 1e-9
         ]
         unsafe = [False] * len(free)
-        for index, is_occupied in enumerate(occupied):
-            if not is_occupied:
+        for index, is_blocked in enumerate(blocked):
+            if not is_blocked:
                 continue
             row, column = divmod(index, width)
             for row_delta, column_delta in offsets:

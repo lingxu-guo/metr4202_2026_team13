@@ -23,6 +23,9 @@ class MissionManager(Node):
         self._waiting_message_logged = False
         self._active_task = None
         self._active_task_description = ''
+        self._active_exploration_goal_id = 0
+        self._pending_exploration_result = Exploration.Request.NO_RESULT
+        self._pending_exploration_goal_id = 0
         self._active_candidate_id = 0
         self._pending_coverage_result = Coverage.Request.NO_RESULT
         self._pending_coverage_candidate_id = 0
@@ -131,8 +134,11 @@ class MissionManager(Node):
 
     def _request_exploration_task(self) -> None:
         """Ask Exploration for its next task."""
+        request = Exploration.Request()
+        request.previous_result = self._pending_exploration_result
+        request.previous_goal_id = self._pending_exploration_goal_id
         self._request_in_flight = True
-        future = self._exploration_client.call_async(Exploration.Request())
+        future = self._exploration_client.call_async(request)
         future.add_done_callback(self._handle_exploration_response)
 
     def _handle_exploration_response(self, future) -> None:
@@ -146,12 +152,18 @@ class MissionManager(Node):
 
         if not response.success:
             self._fail(f'Exploration error: {response.message}')
-        elif response.finished:
+            return
+
+        self._pending_exploration_result = Exploration.Request.NO_RESULT
+        self._pending_exploration_goal_id = 0
+        if response.finished:
+            self._active_exploration_goal_id = 0
             self.get_logger().info(
                 'Exploration complete; finalizing saved ArUco observations.'
             )
             self._state = 'ARUCO_FINALIZE'
         else:
+            self._active_exploration_goal_id = response.goal_id
             self._start_action_for_task(response.task, response.message)
 
     def _finalize_aruco_for_coverage(self) -> None:
@@ -308,12 +320,23 @@ class MissionManager(Node):
             self._request_recovery(f'Nav2 Action status {result.status}.')
             return
 
-        if self._state == 'COVERAGE':
+        if self._state == 'EXPLORATION' and self._active_exploration_goal_id:
+            self._record_exploration_result(Exploration.Request.SUCCEEDED)
+        elif self._state == 'COVERAGE':
             self._record_coverage_result(Coverage.Request.SUCCEEDED)
         self.get_logger().info(
             f'Nav2 completed {self._active_task_description}; requesting next task.'
         )
         self._active_task = None
+
+    def _record_exploration_result(self, result: int) -> None:
+        """Queue one final Exploration result for the next service request."""
+        if self._active_task is None or not self._active_exploration_goal_id:
+            self._fail('Exploration result recorded without an active goal.')
+            return
+        self._pending_exploration_result = result
+        self._pending_exploration_goal_id = self._active_exploration_goal_id
+        self._active_exploration_goal_id = 0
 
     def _record_coverage_result(self, result: int) -> None:
         """Queue one final Coverage result for the next service request."""
@@ -356,7 +379,11 @@ class MissionManager(Node):
             return
 
         if response.decision == Recovery.Response.SKIP:
-            if self._state == 'COVERAGE':
+            if self._state == 'EXPLORATION' and self._active_exploration_goal_id:
+                self._record_exploration_result(
+                    Exploration.Request.FINAL_FAILURE
+                )
+            elif self._state == 'COVERAGE':
                 self._record_coverage_result(Coverage.Request.FINAL_FAILURE)
             self.get_logger().warning(
                 f'Recovery skipped {self._active_task_description}: '
@@ -382,6 +409,11 @@ class MissionManager(Node):
                 )
                 self._active_task = None
                 return
+
+            if self._active_exploration_goal_id:
+                self._record_exploration_result(
+                    Exploration.Request.FINAL_FAILURE
+                )
 
             self.get_logger().info(
                 f'Recovery supplied a replacement task: {response.message}'

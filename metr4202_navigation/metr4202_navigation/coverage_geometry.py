@@ -77,7 +77,8 @@ class CoverageParameters:
     visual_distance_min: float = 0.20
     visual_distance_max: float = 2.00
     viewing_angle_max: float = math.radians(60.0)
-    camera_radial_offset: float = 0.10
+    camera_radial_offset: float = 0.076
+    camera_horizontal_fov: float = math.radians(62.2)
     contour_simplification: float = 0.0
     fixed_visit_cost: float = 0.50
 
@@ -120,6 +121,9 @@ class CoverageModel:
     ) -> None:
         """Build all geometry from one immutable map snapshot."""
         self.grid = grid
+        if not 0.0 < parameters.camera_horizontal_fov <= math.tau:
+            raise ValueError(
+                'camera_horizontal_fov must be in the interval (0, 2*pi].')
         self.parameters = parameters
         self.targets: list[Target] = []
         self.candidates: list[Candidate] = []
@@ -242,7 +246,10 @@ class CoverageModel:
             return TaskDecision(
                 candidate.candidate_id,
                 self.SPIN,
-                spin_yaw=math.tau,
+                spin_yaw=(
+                    math.tau
+                    - self.parameters.camera_horizontal_fov
+                ),
             )
 
         candidate = self._select_candidate(robot_position)

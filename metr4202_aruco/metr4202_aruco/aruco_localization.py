@@ -29,6 +29,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 class ArucoLocalization(Node):
@@ -59,6 +60,12 @@ class ArucoLocalization(Node):
         )
         self._tf_timeout = Duration(
             seconds=float(self.get_parameter('tf_timeout_s').value)
+        )
+        self._visualization_height = float(
+            self.get_parameter('visualization_height_m').value
+        )
+        self._visualization_scale = float(
+            self.get_parameter('visualization_scale_m').value
         )
 
         parameters = TrackingParameters(
@@ -98,6 +105,11 @@ class ArucoLocalization(Node):
             str(self.get_parameter('marker_map_topic').value),
             marker_qos,
         )
+        self._visualization_publisher = self.create_publisher(
+            MarkerArray,
+            str(self.get_parameter('visualization_topic').value),
+            marker_qos,
+        )
         self._camera_subscription = self.create_subscription(
             CameraInfo,
             str(self.get_parameter('camera_info_topic').value),
@@ -135,6 +147,9 @@ class ArucoLocalization(Node):
         self.declare_parameter('camera_info_topic', '/camera/camera_info')
         self.declare_parameter('detections_topic', '/aruco/detections')
         self.declare_parameter('marker_map_topic', '/aruco/marker_map')
+        self.declare_parameter('visualization_topic', '/aruco/visualization')
+        self.declare_parameter('visualization_height_m', 0.15)
+        self.declare_parameter('visualization_scale_m', 0.18)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_length_m', 0.10)
@@ -270,9 +285,7 @@ class ArucoLocalization(Node):
             if self._final_map_from_odom is not None:
                 self._fuse_relative_observation(observation)
 
-        self._marker_publisher.publish(
-            self._build_marker_map(message.header.stamp)
-        )
+        self._publish_maps(message.header.stamp)
 
     def _fuse_relative_observation(
         self,
@@ -303,6 +316,74 @@ class ArucoLocalization(Node):
                 f'Rejected marker {projected.marker_id}: {result.reason}.'
             )
         return result
+
+    def _publish_maps(self, stamp: TimeMessage) -> None:
+        """Publish both the API map and its RViz representation."""
+        self._marker_publisher.publish(self._build_marker_map(stamp))
+        self._visualization_publisher.publish(
+            self._build_visualization(stamp)
+        )
+
+    def _build_visualization(self, stamp: TimeMessage) -> MarkerArray:
+        """Build RViz markers for all current ArUco position estimates."""
+        output = MarkerArray()
+
+        clear_marker = Marker()
+        clear_marker.header.frame_id = self._map_frame
+        clear_marker.header.stamp = stamp
+        clear_marker.action = Marker.DELETEALL
+        output.markers.append(clear_marker)
+
+        for record in self._database.records():
+            position = Marker()
+            position.header.frame_id = self._map_frame
+            position.header.stamp = stamp
+            position.ns = 'aruco_position'
+            position.id = record.marker_id * 2
+            position.type = Marker.SPHERE
+            position.action = Marker.ADD
+            position.pose.position.x = float(record.state[0])
+            position.pose.position.y = float(record.state[1])
+            position.pose.position.z = self._visualization_height
+            position.pose.orientation.w = 1.0
+            position.scale.x = self._visualization_scale
+            position.scale.y = self._visualization_scale
+            position.scale.z = self._visualization_scale
+            if record.confirmed:
+                position.color.r = 0.1
+                position.color.g = 1.0
+                position.color.b = 0.2
+            else:
+                position.color.r = 1.0
+                position.color.g = 0.55
+                position.color.b = 0.05
+            position.color.a = 0.9
+            output.markers.append(position)
+
+            label = Marker()
+            label.header.frame_id = self._map_frame
+            label.header.stamp = stamp
+            label.ns = 'aruco_label'
+            label.id = record.marker_id * 2 + 1
+            label.type = Marker.TEXT_VIEW_FACING
+            label.action = Marker.ADD
+            label.pose.position.x = float(record.state[0])
+            label.pose.position.y = float(record.state[1])
+            label.pose.position.z = (
+                self._visualization_height + self._visualization_scale
+            )
+            label.pose.orientation.w = 1.0
+            label.scale.z = max(0.12, self._visualization_scale * 0.8)
+            label.color.r = 1.0
+            label.color.g = 1.0
+            label.color.b = 1.0
+            label.color.a = 1.0
+            label.text = f'ArUco {record.marker_id}'
+            if not record.confirmed:
+                label.text += ' (tentative)'
+            output.markers.append(label)
+
+        return output
 
     def _build_marker_map(self, stamp: TimeMessage) -> ArucoMarkerArray:
         """Convert database records to the public marker-map message."""
@@ -403,9 +484,7 @@ class ArucoLocalization(Node):
             result = self._fuse_projected_observation(observation)
             accepted_count += int(result.accepted)
 
-        self._marker_publisher.publish(
-            self._build_marker_map(self.get_clock().now().to_msg())
-        )
+        self._publish_maps(self.get_clock().now().to_msg())
         response.success = True
         response.message = (
             f'Reprojected {len(self._relative_observations)} saved '
@@ -424,9 +503,7 @@ class ArucoLocalization(Node):
         self._database.clear()
         self._relative_observations.clear()
         self._final_map_from_odom = None
-        self._marker_publisher.publish(
-            self._build_marker_map(self.get_clock().now().to_msg())
-        )
+        self._publish_maps(self.get_clock().now().to_msg())
         response.success = True
         response.message = (
             f'Cleared {previous_observation_count} saved observations and '

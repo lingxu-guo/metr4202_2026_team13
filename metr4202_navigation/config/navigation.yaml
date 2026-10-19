@@ -4,13 +4,15 @@ exploration:
     base_frame: base_footprint
     occupied_threshold: 50
     frontier_minimum_size: 5
-    obstacle_clearance: 0.20
+    obstacle_clearance: 0.25
+    unknown_clearance: 0.30
     goal_separation: 0.20
     minimum_goal_distance: 0.50
     maximum_goal_distance: 12.0
-    candidate_search_radius: 0.50
-    progress_map_updates: 5
+    candidate_search_radius: 0.80
+    progress_map_updates: 3
     progress_known_cell_threshold: 5
+    progress_wait_timeout: 2.0
 
 coverage:
   ros__parameters:
@@ -19,10 +21,12 @@ coverage:
     base_frame: base_footprint
     occupied_threshold: 50
 
-    # Robot/camera geometry. Measure these on the final hardware.
+    # Waffle Pi mount + Raspberry Pi Camera Module v2.1 (Sony IMX219).
+    # The 2-D model uses horizontal FOV while the robot scans by spinning.
     robot_footprint_radius: 0.22
     obstacle_clearance: 0.08
-    camera_radial_offset: 0.10
+    camera_radial_offset: 0.076
+    camera_horizontal_fov_degrees: 62.2
 
     # Boundary/candidate sampling. Zero selects the map resolution.
     target_spacing: 0.0
@@ -31,7 +35,8 @@ coverage:
     contour_simplification: 0.0
 
     # Visibility model. Distances are from the camera to the target surface;
-    # the angle is target-surface incidence, not the camera optical FOV.
+    # viewing_angle is target-surface incidence, not optical field of view.
+    # Validate the distance limits experimentally on the physical camera.
     visual_distance_min: 0.20
     visual_distance_max: 2.00
     viewing_angle_max_degrees: 60.0

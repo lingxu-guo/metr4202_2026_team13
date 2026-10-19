@@ -179,13 +179,84 @@ ros2 launch metr4202_bringup simulation.launch.py
 ros2 launch metr4202_bringup simulation.launch.py start_team13:=false
 ```
 
-更换世界和初始位置：
+### 启动其他地图
+
+`simulation.launch.py` 的 `world` 参数接受任意 Gazebo Classic `.world`
+文件的绝对路径。可以同时用 `x_pose` 和 `y_pose` 设置机器人出生点：
 
 ```bash
 ros2 launch metr4202_bringup simulation.launch.py \
   world:=/absolute/path/to/team13_arena.world \
   x_pose:=0.0 \
   y_pose:=0.0
+```
+
+例如启动 TurtleBot3 自带的空地图：
+
+```bash
+ros2 launch metr4202_bringup simulation.launch.py \
+  world:="$(ros2 pkg prefix --share turtlebot3_gazebo)/worlds/empty_world.world" \
+  x_pose:=0.0 \
+  y_pose:=0.0
+```
+
+其他可直接替换的 TurtleBot3 地图包括：
+
+```text
+turtlebot3_world.world
+turtlebot3_house.world
+turtlebot3_dqn_stage1.world
+turtlebot3_dqn_stage2.world
+turtlebot3_dqn_stage3.world
+turtlebot3_dqn_stage4.world
+```
+
+例如启动 TurtleBot3 House：
+
+```bash
+ros2 launch metr4202_bringup simulation.launch.py \
+  world:="$(ros2 pkg prefix --share turtlebot3_gazebo)/worlds/turtlebot3_house.world" \
+  x_pose:=-2.0 \
+  y_pose:=-0.5
+```
+
+### 启动 METR4202 Final Demo World
+
+Final Demo World 的 ArUco marker 使用单独的 Gazebo 材质和模型目录。启动前必须
+声明 `GAZEBO_RESOURCE_PATH` 和 `GAZEBO_MODEL_PATH`；否则 marker 贴图可能无法显示。
+
+含 ArUco marker 的完整启动命令：
+
+```bash
+cd ~/turtlebot3_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export TURTLEBOT3_MODEL=waffle_pi
+
+export GAZEBO_RESOURCE_PATH="$(ros2 pkg prefix --share metr4202_aruco_explore)/resource:${GAZEBO_RESOURCE_PATH:-/usr/share/gazebo-11}"
+export GAZEBO_MODEL_PATH="$(ros2 pkg prefix --share metr4202_aruco_explore)/models:${GAZEBO_MODEL_PATH:-}"
+
+ros2 launch metr4202_bringup simulation.launch.py \
+  world:="$(ros2 pkg prefix --share metr4202_aruco_explore)/worlds/metr4202_final_demo.world" \
+  x_pose:=0.0 \
+  y_pose:=0.0
+```
+
+启动不含 ArUco marker 的版本时，只需替换 world 文件：
+
+```bash
+ros2 launch metr4202_bringup simulation.launch.py \
+  world:="$(ros2 pkg prefix --share metr4202_aruco_explore)/worlds/metr4202_final_demo_no_aruco.world" \
+  x_pose:=0.0 \
+  y_pose:=0.0
+```
+
+如果 `ros2 pkg prefix --share metr4202_aruco_explore` 找不到包，请先在当前工作区
+构建该依赖并重新加载环境：
+
+```bash
+colcon build --symlink-install --packages-select metr4202_aruco_explore
+source install/setup.bash
 ```
 
 使用不同 DDS Domain：
@@ -232,7 +303,7 @@ ros2 launch metr4202_navigation team13_system.launch.py --show-args
 
 需要在最终硬件上重点确认：
 
-- Coverage 的机器人半径、相机径向偏移、观察距离和最大入射角；
+- Coverage 的机器人半径、相机径向偏移、水平 FOV、观察距离和最大入射角；
 - ArUco 的 marker 实际边长、字典、深度范围和重投影误差；
 - 相机 `CameraInfo.K/D`；
 - `odom → camera` 外参和图像时间戳 TF；

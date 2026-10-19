@@ -3,7 +3,9 @@ aruco_detection:
     image_topic: /camera/image_raw
     detections_topic: /aruco/detections
     debug_image_topic: /aruco/debug_image
-    dictionary: DICT_4X4_50
+    # Final-demo markers use OpenCV's 6x6_1000 family (IDs 0, 2, and 42).
+    # Camera intrinsics/distortion come from /camera/camera_info.
+    dictionary: DICT_6X6_1000
     min_marker_perimeter_px: 40.0
     max_detection_rate_hz: 0.0
     publish_debug_image: false
@@ -13,6 +15,9 @@ aruco_localization:
     camera_info_topic: /camera/camera_info
     detections_topic: /aruco/detections
     marker_map_topic: /aruco/marker_map
+    visualization_topic: /aruco/visualization
+    visualization_height_m: 0.15
+    visualization_scale_m: 0.18
     odom_frame: odom
     map_frame: map
     marker_length_m: 0.10

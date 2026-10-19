@@ -111,7 +111,8 @@ Coverage 在 INIT 时冻结最终地图，此后不会用新地图重建模型�
 | --- | ---: | --- | --- |
 | `robot_footprint_radius` | 0.22 m | 量机器人中心到最外侧实体的最大水平距离，含保险杠/支架 | 决定安全候选区域 |
 | `obstacle_clearance` | 0.08 m | 按定位误差、地图误差和安全裕量实测 | 加到安全半径上 |
-| `camera_radial_offset` | 0.10 m | 量 `base_footprint` 旋转中心到相机光心的水平距离 | 把机器人中心距离换算成相机距离 |
+| `camera_radial_offset` | 0.076 m | Waffle Pi 默认安装值；实机应量 `base_footprint` 旋转中心到相机光心的水平距离 | 把机器人中心距离换算成相机距离 |
+| `camera_horizontal_fov_degrees` | 62.2° | Raspberry Pi Camera Module v2.1 标称水平视场；更换镜头或裁切模式后重新确认 | 计算完整水平扫描所需旋转角 |
 | `visual_distance_min` | 0.20 m | 实测能稳定成像/检测的最近表面距离 | 过滤过近目标 |
 | `visual_distance_max` | 2.00 m | 在最终分辨率、光照、marker/目标尺度下测试可靠最远距离 | 过滤过远目标 |
 | `viewing_angle_max_degrees` | 60° | 实测相对目标表面法向的最大可靠斜视角 | 过滤过斜视线 |
@@ -119,7 +120,8 @@ Coverage 在 INIT 时冻结最终地图，此后不会用新地图重建模型�
 注意：
 
 - `viewing_angle_max_degrees` 是目标表面入射角，不是相机水平/垂直 FOV。
-- 当前模型假设机器人到点后旋转 360°，因此没有单独建模瞬时水平 FOV；也没有建模相机高度、俯仰角、目标高度和垂直 FOV。若任务需要严格三维可见性，这些不是改 YAML 就能解决，需要扩展 `coverage_geometry.py`。
+- 当前模型用水平 FOV 把完整扫描角设为 `360° - horizontal_fov`；扫描起始画面与旋转覆盖共同形成完整 360° 水平视野。
+- 二维模型没有建模相机高度、俯仰角、目标高度和垂直 FOV。若任务需要严格三维可见性，需要扩展 `coverage_geometry.py`。
 - 安全半径实际为 `max(robot_footprint_radius, camera_radial_offset) + obstacle_clearance`。
 
 ### 3.2 ArUco：相机标定与物理量
@@ -139,7 +141,7 @@ Coverage 在 INIT 时冻结最终地图，此后不会用新地图重建模型�
 | 相机 optical-frame TF | 由 URDF/TF 发布 | 平移和旋转必须与最终安装位姿一致，且每个图像时间戳能查到 `odom <- camera` |
 | 最终 `map <- odom` TF | 由 SLAM 发布 | Exploration 完成时必须可查询；该次结果会固定为 Coverage 阶段的 ArUco 坐标基准 |
 | `marker_length_m` | 0.10 m | 测量黑色 marker 正方形有效边长，不含外部白边 |
-| `dictionary` | `DICT_4X4_50` | 必须与打印/仿真 marker 字典一致 |
+| `dictionary` | `DICT_6X6_1000` | 与 Final Demo 的 6×6 marker（ID 0、2、42）一致 |
 | `min_marker_perimeter_px` | 40 px | 用实际成像尺寸权衡远距离漏检和噪声误检 |
 | `min_depth_m` / `max_depth_m` | 0.15 / 4.0 m | 按可靠 PnP 距离实验确定 |
 | `max_reprojection_error_px` | 3.0 px | 用标定后的重投影误差分布确定 |
